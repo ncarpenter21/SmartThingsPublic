@@ -20,7 +20,7 @@
 * The user assumes all responsibility for selecting the software and for the results obtained from the use of the software. The user shall bear the entire risk as to the quality and the performance of the software.
 */ 
 
-def clientVersion() { "04.08.00" }
+def clientVersion() { "04.11.04" }
 
 /**
 * Rental Lock Automater (RLA) - Automate lock user management for rental listing properties (AirBnB, Vrbo, HomeAway, Booking, TripAdvisor, Expedia, Generic iCal)
@@ -28,6 +28,17 @@ def clientVersion() { "04.08.00" }
 * Copyright RBoy Apps, redistribution, modification or reuse of code is not allowed without permission
 *
 * Change Log:
+* 2022-06-21 - (v04.11.04) Improve Usage history page, allow for negative check in/out offsets, added option to regenerate date based Automatic user codes when check0=-in/check-out dates change
+* 2022-04-24 - (v04.11.03) Fix clear codes text
+* 2022-04-07 - (v04.11.02) Improve update notifications
+* 2022-03-24 - (v04.11.01) Hide custom actions page for Automatic users to avoid confusion since they aren't applicable
+* 2022-03-22 - (v04.11.00) Improve VRBO, HomeAway connection stability
+* 2022-03-13 - (v04.10.00) Workaround for Airbnb 429 error
+* 2021-11-15 - (v04.09.00) Update for change in Airbnb iCalendar format
+* 2021-11-12 - (v04.08.04) Show warning if users enters all 0's for user code
+* 2021-10-12 - (v04.08.03) Randomize calendar sync interval slightly to optimize response time
+* 2021-08-23 - (v04.08.02) Fix checkin/checkout time when automated users start/end time are manually adjusted
+* 2021-07-16 - (v04.08.01) Fix for Google iCalendar connection changes
 * 2021-05-05 - (v04.08.00) Increase limit to 12 properties, add start/end time offset for custom calendars
 * 2021-03-20 - (v04.07.01) Support for cipher changes to AirBnB and other calendars
 * 2021-03-05 - (v04.06.01) If phone markers are missing from custom calendar, don't generate code
@@ -376,7 +387,7 @@ def setupApp() {
                 input name: "detailedNotifications", title: "Get detailed notifications", type: "bool", defaultValue: false, required: false
                 paragraph ""
                 paragraph title: "[WARNING] CLEAR USER CODES", "ENABLING THIS OPTION WILL CLEAR THE FIRST ${(maxUserNames as Integer) ?: 0} USER CODES FROM EACH OF THE LOCKS SELECTED ABOVE. AFTER ENABLING THIS OPTION, CLICK 'DONE' AND WAIT FOR THE CLEARING TO TAKE EFFECT", required: true
-                input name: "clearUserCodes", title: "CLEAR EXISTING USER CODES", type: "bool", defaultValue: false, required: false
+                input name: "clearUserCodes", title: "CLEAR USER CODES", type: "bool", defaultValue: false, required: false
             }
         } else {
             section() {
@@ -420,9 +431,9 @@ def userHistoryPage(params) {
         }
         
         for (lock in locks) {
-            def events = (lock.eventsSince((new Date(now())) - 30, [max: 1000]))?.findAll { ((showAllLockUnlockEvents ? ["invalidCode", "unknown"] : []) + ["lock", "unlock"]).contains(it.name) && (showAllLockUnlockEvents ? true : it.descriptionText?.contains("by")) } // ST limits it to 7 days and only look for lock and unlock events but lets ask for 30
+            def events = (lock.eventsSince((new Date(now())) - 30, [max: 1000]))?.findAll { ((showAllLockUnlockEvents ? ["invalidCode"] : []) + ["lock"]).contains(it.name) && (showAllLockUnlockEvents ? true : it.descriptionText?.contains("by")) } // ST limits it to 7 days and only look for lock and invalidCode events but lets ask for 30
             section (lock.displayName) {
-                def text = events.collect { it.date?.format("MMM d H:m", location.timeZone ?: TimeZone.getDefault()) + " " + it.descriptionText?.replace('"', "") }?.join("\n")
+                def text = events.collect { it.date?.format("MMM d H:m", location.timeZone ?: TimeZone.getDefault()) + " " + (it.descriptionText ?: (it.value?.contains("unknown") ? "Jammed" : it.name?.contains("invalidCode") ? "Invalid code" : it.value))?.replace('"', "") }?.join("\n") // Sometimes the descriptionText is null
                 if (text) {
                     paragraph text
                 }
@@ -496,7 +507,7 @@ def checkInOutActionsPage(params) {
         section () {
             input "${action}EnableActions${no}", "bool", title: "Run Check${checkIn ? "-in" : "-out"} actions", required: false, submitOnChange: true
             if (settings."${action}EnableActions${no}") {
-                input "${action}Offset${no}", "number", title: "Run actions these many minutes ${checkIn ? "before Check-in" : "after Check-out"}", description: "...at ${checkIn ? "check-in" : "check-out"} time", required: false, range: "1..${maxOffsetActions}"
+                input "${action}Offset${no}", "number", title: "Run actions these many minutes ${checkIn ? "before Check-in" : "after Check-out"}", description: "...at ${checkIn ? "check-in" : "check-out"} time", required: false, range: "-${maxOffsetActions}..${maxOffsetActions}"
 
                 /*input "${action}Adt${no}", "bool", title: checkIn ? "Disarm ADT" : "Arm ADT to Away", required: false, submitOnChange: true
                 if (settings."${action}Adt${no}") { // If we have a seleted an ADT option
@@ -774,6 +785,10 @@ def rentalIntegrationPage() {
                         href(name: "phoneHelp", title: "NOTE: Please make sure that EVERY reservation 'DESCRIPTION' entry in the iCalendar has the user phone no. as described in this FAQ link", description: "Frequently asked questions", style: "external", url: "http://www.rboyapps.com/RLA-CustomCals.htm", required: false, image: "https://www.rboyapps.com/images/FAQ.png")
                     }
                     input "autoCodeGeneric", "enum", title: "...automatic code generation", required: true, options: getAutomaticCodeOptionsGeneric(codeLen).collectEntries { k, v -> v.option }, submitOnChange: true
+                }
+                if ([ [autoCodeAirBnB, "iCalURLAirBnB"], [autoCodeVRBO, "iCalURLVRBO"], [autoCodeHomeAway, "iCalURLHomeAway"], [autoCodeBooking, "iCalURLBooking"], [autoCodeTripAdvisor, "iCalURLTripAdvisor"], [autoCodeExpedia, "iCalURLExpedia"] ].any { autoCodePattern, iCalUrl -> (autoCodePattern == "ddDDMMYY") && unitSuffixes.any { no, suffix -> settings."${iCalUrl}${suffix}"} }) { // Custom calendar users are always updated when the dates change because their username contains the date, so this doesn't apply to them
+                    paragraph ""
+                    input name: "updateDateAutoCodes", type: "bool", title: "Automatic code updates", description: "Enable this to regenerate date based automatic user codes when the reservation check-in/check-out dates change", defaultValue: false, required: false, submitOnChange: false
                 }
                 
                 paragraph ""
@@ -1613,6 +1628,8 @@ def userConfigPage(params) {
         }
 
         section() {
+            def rentalUser = maxRentalUsers && (i >= ((maxManualUsers ?: 0) + 1)) // Check if this is a rental user
+
             def priorName = settings."userNames${i}"
             def priorCode = settings."userCodes${i}"
             def priorNotify = settings."userNotify${i}" ? settings."userNotify${i}".toBoolean() : settings."userNotify${i}" // UpdateSettings stores it as string
@@ -1656,6 +1673,12 @@ def userConfigPage(params) {
                 // Check if the user has entered a non digit string
                 if ((priorCode?.size() > 0) && !priorCode?.isNumber()) {
                     def msg = "WARNING: CODE IS NOT A NUMBER, PROGRAMMING WILL FAIL!"
+                    paragraph title: msg, required: true, ""
+                }
+
+                // Check if the user has entered all 0's
+                if (priorCode && priorCode?.matches("0*")) {
+                    def msg = "WARNING: ${priorCode} IS A RESERVED CODE, TO DELETE USER DON'T ENTER ANY CODE"
                     paragraph title: msg, required: true, ""
                 }
 
@@ -1876,12 +1899,14 @@ def userConfigPage(params) {
                 input "userXNotifyPresence${i}", "capability.presenceSensor", title: "...and none of these people are present", description: "when all these people are not present", required: false, multiple: true
             }
 
-            // Unlock actions for each user
-            def hrefParams = [
-                user: i as String, 
-                passed: true 
-            ]
-            href(name: "unlockLockActions", params: hrefParams, title: "Custom actions/notifications", page: "unlockLockActionsPage", description: (settings."userOverrideUnlockActions${user}" || (settings."userOverrideNotifications${user}" && (settings."userNotify${user}" ? settings."userNotify${user}".toBoolean() : settings."userNotify${user}"))) ? "Configured" : "", required: false, image: "https://www.rboyapps.com/images/LockUnlock.png")
+            if (!rentalUser) { // These options aren't available to rental users as yet
+                // Unlock actions for each user
+                def hrefParams = [
+                    user: i as String, 
+                    passed: true 
+                ]
+                href(name: "unlockLockActions", params: hrefParams, title: "Custom actions/notifications", page: "unlockLockActionsPage", description: (settings."userOverrideUnlockActions${user}" || (settings."userOverrideNotifications${user}" && (settings."userNotify${user}" ? settings."userNotify${user}".toBoolean() : settings."userNotify${user}"))) ? "Configured" : "", required: false, image: "https://www.rboyapps.com/images/LockUnlock.png")
+            }
         }
     }
 }
@@ -2044,7 +2069,7 @@ private checkMemoryStatus() {
 }
 
 // Downloads the property management calendars, parses the rental user schedules and saves them for deferred processing
-private downloadRentalData() {
+def downloadRentalData() {
     def msgs = []
     
     TimeZone timeZone = location.timeZone
@@ -2225,7 +2250,7 @@ private processRentalUsers() {
             def propertyName = settings."propertyName${unitSuffixes[no]}" ?: "" // Don't use null
             def updatedCode = state.phonePattern."${suffix}${bSource}UpdateCodes" // Check if we have any property calendars with an overwrite request
             
-            //log.trace "Rental user: $user, name: $name, code: $code, startDate: $startDate, startTime: $startTime, expDate: $expDate, expTime: $expTime, notify: $notify, notifyCount: $notifyCount, userLocks:$userLocks, propertyName:$propertyName"
+            //log.trace "Rental user: $user, name: $name, code: $code, startDate: $startDate, startTime: $startTime, expDate: $expDate, expTime: $expTime, notify: $notify, notifyCount: $notifyCount, userLocks:$userLocks, propertyName:$propertyName, manualUpdate:$manualUpdate"
 
             try { // Ensure we have valid dates to process the entry
                 def currentUser = false // Is this an existing user
@@ -2252,11 +2277,6 @@ private processRentalUsers() {
                         expTime = curr.expTime
                     }
                     
-                    // Check if we have a new updated code to use
-                    if (!updatedCode && curr.code) { // AirBnB sometimes delays sending the phone number so we may have a blank entry stored, if so ignore it (NOTE: this means the user cannot have a blank manual override)
-                        code = curr.code // Use the current code
-                    }
-
                     // Recalculate activation start date, if we don't have an updated reservation date then use the existing date and convert from yyyy-MM-dd to yyyyMMdd
                     start = Date.parse("yyyyMMddHH:mmZ", (uStartDate ? startDate : curr.startDate.replace("-", "")) + timeToday(startTime, timeZone).format("HH:mmZ", timeZone)) - (entry.startTime ? 0 :(uStartDate ? preArrivalActivationDays : ((updatedPreactivation && !manualUpdate?.startDate) ? (preArrivalActivationDays - state.rentalPreArrivalActivationDays) : 0))) // Manual dates are already preactivated, only compensate for preactivation if we're have an updated original reservation start date or a change in the number of preactivation days (adjust for the number of days the existing startDate was already preactivated), don't adjust for calendars with custom start times
                     startStr = start.format("EEE MMM dd yyyy HH:mm z", timeZone)
@@ -2294,6 +2314,83 @@ private processRentalUsers() {
                         }
                     }
 
+                    // If there is an updated start/end date and dates are used to generate automatic user codes and force automatic code updates is enabled (if reservation dates change, then manual updates are ignored), then update the automatic code
+                    if (updateDateAutoCodes && (uStartDate || uExpDate)) {
+                        switch (bSource) {
+                            case "AirBnB":
+                            	if ((autoCodeAirBnB == "ddDDMMYY") && (code != entry.code)) {
+                                    def msg = "Updating dated based automatic code for user ${name} in slot ${curr.user}"
+                                    log.debug msg
+                                    //msgs << msg // We should only message if users are going to be programmed, also a message should be sent anyways when the reservation dates change
+                                    code = entry.code // Use the updated code
+                                    updatedCode = true
+                                }
+                            	break
+                            case "VRBO":
+                            	if ((autoCodeVRBO == "ddDDMMYY") && (code != entry.code)) {
+                                    def msg = "Updating dated based automatic code for user ${name} in slot ${curr.user}"
+                                    log.debug msg
+                                    //msgs << msg // We should only message if users are going to be programmed, also a message should be sent anyways when the reservation dates change
+                                    code = entry.code // Use the updated code
+                                    updatedCode = true
+                                }
+                            	break
+                            case "HomeAway":
+                            	if ((autoCodeHomeAway == "ddDDMMYY") && (code != entry.code)) {
+                                    def msg = "Updating dated based automatic code for user ${name} in slot ${curr.user}"
+                                    log.debug msg
+                                    //msgs << msg // We should only message if users are going to be programmed, also a message should be sent anyways when the reservation dates change
+                                    code = entry.code // Use the updated code
+                                    updatedCode = true
+                                }
+                            	break
+                            case "Booking":
+                            	if ((autoCodeBooking == "ddDDMMYY") && (code != entry.code)) {
+                                    def msg = "Updating dated based automatic code for user ${name} in slot ${curr.user}"
+                                    log.debug msg
+                                    //msgs << msg // We should only message if users are going to be programmed, also a message should be sent anyways when the reservation dates change
+                                    code = entry.code // Use the updated code
+                                    updatedCode = true
+                                }
+                            	break
+                            case "TripAdvisor":
+                            	if ((autoCodeTripAdvisor == "ddDDMMYY") && (code != entry.code)) {
+                                    def msg = "Updating dated based automatic code for user ${name} in slot ${curr.user}"
+                                    log.debug msg
+                                    //msgs << msg // We should only message if users are going to be programmed, also a message should be sent anyways when the reservation dates change
+                                    code = entry.code // Use the updated code
+                                    updatedCode = true
+                                }
+                            	break
+                            case "Expedia":
+                            	if ((autoCodeExpedia == "ddDDMMYY") && (code != entry.code)) {
+                                    def msg = "Updating dated based automatic code for user ${name} in slot ${curr.user}"
+                                    log.debug msg
+                                    //msgs << msg // We should only message if users are going to be programmed, also a message should be sent anyways when the reservation dates change
+                                    code = entry.code // Use the updated code
+                                    updatedCode = true
+                                }
+                            	break
+                            case "Generic":
+                            	if ((autoCodeGeneric == "ddDDMMYY") && (code != entry.code)) {
+                                    def msg = "Updating dated based automatic code for user ${name} in slot ${curr.user}"
+                                    log.debug msg
+                                    //msgs << msg // We should only message if users are going to be programmed, also a message should be sent anyways when the reservation dates change
+                                    code = entry.code // Use the updated code
+                                    updatedCode = true
+                                }
+                            	break
+                            default:
+                                break
+                        }
+                    }
+                    
+                    // Stay with current automatic code unless there's a updated code forced (current code also reflects manual overrides)
+                    if (!updatedCode && curr.code) { // AirBnB sometimes delays sending the phone number so we may have a blank entry stored, if so ignore it (NOTE: this means the user cannot have a blank manual override)
+                        code = curr.code // Keep the current code
+                    }
+                    
+
                     notify = curr.notify // Use saved settings
                     notifyCount = notifyCountUpdated ? notifyCount : curr.notifyCount // Use saved settings unless the main settings have been updated
                     //userLocks = ((locks?.size() > 1) && curr.userLocks ? curr.userLocks : userLocks) // Don't keep custom setting for userLocks, always use the latest unit settings
@@ -2327,14 +2424,14 @@ private processRentalUsers() {
                     invalidUsers << [ name: name, msg: msg, expDate: expDate ]
                 } else if (maxRentalUsers) { // Only if we have automatic rental user slots defined
                     use (groovy.time.TimeCategory) {
-                        def todayCheckIn = Date.parse("yyyyMMddHH:mmZ", startDate + timeToday(checkInTime, timeZone).format("HH:mmZ", timeZone)) - (settings."checkInOffset${no}" ?: 0).minutes // Adjust for early run
+                        def todayCheckIn = Date.parse("yyyyMMddHH:mmZ", startDate + timeToday(startTime, timeZone).format("HH:mmZ", timeZone)) - (settings."checkInOffset${no}" ?: 0).minutes // Adjust for early run
                         if (isDateToday(todayCheckIn)) { // If we have a user CheckIn scheduled today (startDate is not adjusted for preactivation)
                             state.checkInNextRun[(no as String)] = todayCheckIn.getTime() // Save as ms
                             def msg = "CheckIn actions for $name in $propertyName scheduled today at ${todayCheckIn.format("EEE MMM dd yyyy HH:mm z", timeZone)}"
                             log.debug msg
                         }
 
-                        def todayCheckOut = Date.parse("yyyyMMddHH:mmZ", expDate + timeToday(checkOutTime, timeZone).format("HH:mmZ", timeZone)) + (settings."checkOutOffset${no}" ?: 0).minutes // Adjust for delayed run
+                        def todayCheckOut = Date.parse("yyyyMMddHH:mmZ", expDate + timeToday(expTime, timeZone).format("HH:mmZ", timeZone)) + (settings."checkOutOffset${no}" ?: 0).minutes // Adjust for delayed run
                         if (isDateToday(todayCheckOut)) { // If we have a user CheckOut scheduled today (expDate is not adjusted for preactivation)
                             state.checkOutNextRun[(no as String)] = todayCheckOut.getTime() // Save in ms
                             def msg = "CheckOut actions for $name in $propertyName scheduled today at ${todayCheckOut.format("EEE MMM dd yyyy HH:mm z", timeZone)}"
@@ -2534,15 +2631,20 @@ private fromSMSTemplate(code, start, exp, property) {
 
 // Download the iCalendar file asynchronously - does not follow redirect, returns code
 private downloadiCalendar(url, data, callback, customHeaders = null) {
-    //log.trace "Downloading URL: $url with Data:$data"
+    log.trace "Downloading URL: $url with Data:$data"
     
     // Download the iCalendar file
     try {
         def params = [
             uri: url,
-            requestContentType: "*/*", // Default is application/json which doesn't work with many sites, Yahoo won't accept "text/calendar" or "text/*" or the default if not specified, VRBO/HomeAway won't accept "", use application/* or */* (accept all)
-            //contentType: "", //"text/plain", // We don't have a specific content type we are sending or we are sending a plain text (Yahoo won't accept "text/plain")
-            //tlsVersion: "TLSv1.2",
+            //contentType: "", //"text/plain", // We don't have a specific 'Accept' header we are sending or we are sending a plain text (Yahoo won't accept "text/plain")
+            //tlsVersion: "TLSv1.2", // ST now uses TLS 1.2 do we don't need to force it
+            // When requestContentType is unspecified (default), 'Content-Type' is application/json which doesn't work with many sites
+            // Yahoo won't accept "text/calendar" or "text/*" or the default if not specified
+            // VRBO/HomeAway won't accept ""
+            // Google won't accept */* or text/*
+            // Most compatible - use application/* or */* (accept all)
+            requestContentType: (url?.contains("calendar.google.com") ? "text/calendar" : "*/*"), // 'Content-Type' header
         ]
         
         if (customHeaders) {
@@ -2636,7 +2738,8 @@ private iCalToMapListAirBnB(str) {
         //log.trace day
         def dayMap = [:]
         //[ ["DTEND;VALUE=DATE",":","DTSTART;"], ["DTSTART;VALUE=DATE",":","UID:"], ["UID",":","DESCRIPTION:"], ["CHECKIN",":","\\n"], ["CHECKOUT",":","\\n"], ["NIGHTS",":","\\n"], ["PHONE",":","\\n"], ["EMAIL",":","\\n"], ["PROPERTY",":","\\n"], ["SUMMARY",":","LOCATION:"], ["LOCATION",":",""] ].each { key, token, eol -> // Identify which keys we want to extract and the token and delimiter for them
-        [ ["DTEND",":","\n"], ["DTSTART",":","\n"], ["PHONE",":","\\n"], ["SUMMARY",":","\n"], ["code","=","\\n"], ["Phone Number (Last 4 Digits)",":","\n"] ].each { key, token, eol -> // Identify which keys we want to extract and the token and delimiter for them
+        //[ ["DTEND",":","\n"], ["DTSTART",":","\n"], ["PHONE",":","\\n"], ["SUMMARY",":","\n"], ["code","=","\\n"], ["Phone Number (Last 4 Digits)",":","\n"] ].each { key, token, eol -> // Identify which keys we want to extract and the token and delimiter for them
+        [ ["DTEND",":","\n"], ["DTSTART",":","\n"], ["SUMMARY",":","\n"], ["code","=","\\n"], ["tails","/","\\n"], ["Phone Number (Last 4 Digits)",":","\n"] ].each { key, token, eol -> // Identify which keys we want to extract and the token and delimiter for them
             dayMap.put(key, getKeyValue(day, key, token, eol))
         }
         //log.trace "$dayMap\n$day"
@@ -2662,7 +2765,7 @@ private getScheduleAirBnB(pinLen) {
             return // Move on
         }
 
-        if (!downloadiCalendar(proxyURL + cleanSecureUrl(iCalUrl), [pinLen: pinLen, no: no, suffix: suffix, proxy: true], processAirBnBResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+        if (!downloadiCalendar(cleanSecureUrl(iCalUrl), [pinLen: pinLen, no: no, suffix: suffix, proxy: false], processAirBnBResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
             def msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} AirBnB calendar. Retrying in about ${rentalUpdateFrequency} minutes"
             log.error msg
             msgs << msg
@@ -2691,18 +2794,40 @@ def processAirBnBResponseAsync(ret, data) {
         def msg
         def rLocation = ret.headers?.location ?: ret.headers?.Location // Some shards return the redirect in location, others in Location
         // ST Async HTTP has a bug that it can't follow redirects, so check if that's the error and then try a sync httpGet
-        if (!ret.status) { // When it's a redirect error bug, status is null
-            msg = "AirBnB response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an error: ${ret.getErrorMessage()}. Retrying using proxy synchronous request"
-            log.warn (msg + "\nRedirect Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
-            getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "AirBnB", asName: "Airbnb", siteName: "AirBnB", processResponse: "processAirBnBResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
-            return // We're done here
+        if (!ret.status) { // When it's a redirect error bug or SSL handshake failure, status is null
+            if (ret.getErrorMessage()?.contains("handshake_failure")) {
+                if (!data.proxy) {
+                    msg = "AirBnB response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy request"
+                    log.warn (msg + "\nSSL Handshake Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    if (!downloadiCalendar(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], processAirBnBResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                        msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} AirBnB calendar proxy. Retrying in about ${rentalUpdateFrequency} minutes"
+                        log.error msg
+                    } else {
+                        return // We're done here
+                    }
+                } else {
+                    msg = "AirBnB response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an proxy SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy synchronous request"
+                    log.warn (msg + "\nSSL Handshake proxy Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "AirBnB", asName: "Airbnb", siteName: "AirBnB", processResponse: "processAirBnBResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                    return // We're done here
+                }
+            } else {            
+                msg = "AirBnB response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an error: ${ret.getErrorMessage()}. Retrying using synchronous request"
+                log.warn (msg + "\nRedirect Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                if (getScheduleSync(cleanSecureUrl(iCalUrl), data, [ iCalName: "AirBnB", asName: "Airbnb", siteName: "AirBnB", processResponse: "processAirBnBResponse" ])?.contains("handshake_failure")) { // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now
+                    msg = "AirBnB response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an proxy SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy synchronous request"
+                    log.warn (msg + "\nSSL Handshake proxy Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "AirBnB", asName: "Airbnb", siteName: "AirBnB", processResponse: "processAirBnBResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                    return // We're done here
+                }
+            }
         } else if ([ 301, 302, 303, 304, 305, 306, 307, 308 ].any { status -> status == ret.status } && rLocation) { // Sometimes ST doesn't handle redirect propertly, so let us handle it
             msg = "AirBnB response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} redirected, retrying redirect:\n${rLocation}"
             log.warn msg
             if (iCalUrl == rLocation?.trim()) { // We shouldn't be stuck in a loop
                 msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} AirBnB calendar, redirect loop. Retrying in about ${rentalUpdateFrequency} minutes"
                 log.error msg
-            } else if (!downloadiCalendar(proxyURL + cleanSecureUrl(rLocation), data + [proxy: true], processAirBnBResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+            } else if (!downloadiCalendar(cleanSecureUrl(rLocation), data + [proxy: false], processAirBnBResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now
                 msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} AirBnB calendar redirect. Retrying in about ${rentalUpdateFrequency} minutes"
                 log.error msg
             } else {
@@ -2798,9 +2923,9 @@ def processAirBnBResponse(ret, data) {
     for (entry in entries) {
         // Details about users checkin, checkout, phone and name
         def name = entry['SUMMARY']?.trim()
-        if ((name?.toLowerCase()?.contains("reserved") && entry['code']) || ((name =~ /\(.*\)/) && !name?.toLowerCase().startsWith("pending:") && !name?.toLowerCase().contains("not available"))) { // Only take confirmed entries, they contain the reservation code between the () and doesn't start with "PENDING:" or contains "Not available"
+        if ((name?.toLowerCase()?.contains("reserved") && (entry['tails'] || entry['code'])) || ((name =~ /\(.*\)/) && !name?.toLowerCase().startsWith("pending:") && !name?.toLowerCase().contains("not available"))) { // Only take confirmed entries, they contain the reservation code between the () and doesn't start with "PENDING:" or contains "Not available"
             if (name?.toLowerCase()?.contains("reserved")) { // New format (last 4 digits of phone and no name)
-                name = "Airbnb" + (addReservationIdToName ? " (" + entry['code']?.trim() + ")" : "")
+                name = "Airbnb" + (addReservationIdToName ? " (" + (entry['tails'] ?: entry['code'])?.trim() + ")" : "")
             } else if (!addReservationIdToName) { // Old format (name and phone number)
                 name = (name - ~/\(.*\)/)?.trim() // Remove the reservation id and keep just the name
             }
@@ -2810,7 +2935,7 @@ def processAirBnBResponse(ret, data) {
             def startTime = checkInTime // Use host configured settings
             def expDate = entry['DTEND']?.trim()?.take(8)
             def expTime = checkOutTime // Use host configured settings
-            def phone = (entry['PHONE'] ?: "+1111111" + entry['Phone Number (Last 4 Digits)'])?.trim()?.replaceAll(/[^0-9\+]/, "") // User's phone for AirBnB, keep only number and + (country code), new format doesn't have phone number, only last 4 digits so dummy up the rest
+            def phone = ("+1111111" + entry['Phone Number (Last 4 Digits)'])?.trim()?.replaceAll(/[^0-9\+]/, "") // User's phone for AirBnB, keep only number and + (country code), new format doesn't have phone number, only last 4 digits so dummy up the rest
             //def userLocks = ((locks?.size() > 1) && settings."propertyLocks${suffix}" ? (locks*.id?.every { settings."propertyLocks${suffix}"?.contains(it) } ? "" : settings."propertyLocks${suffix}") : "") // Only save the user locks if they aren't all (to save state variable space in ST has a paltry 100K space)
 
             def code = generateAutomaticCode(autoCodeAirBnB, pinLen, phone, startDate, expDate, name)
@@ -2933,7 +3058,7 @@ private getScheduleVRBO(pinLen) {
             return // Move on
         }
 
-        if (!downloadiCalendar(proxyURL + cleanSecureUrl(iCalUrl), [pinLen: pinLen, no: no, suffix: suffix, proxy: true], processVRBOResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+        if (!downloadiCalendar(cleanSecureUrl(iCalUrl), [pinLen: pinLen, no: no, suffix: suffix, proxy: false], processVRBOResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
             def msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} VRBO calendar. Retrying in about ${rentalUpdateFrequency} minutes"
             log.error msg
             msgs << msg
@@ -2963,17 +3088,39 @@ def processVRBOResponseAsync(ret, data) {
         def rLocation = ret.headers?.location ?: ret.headers?.Location // Some shards return the redirect in location, others in Location
         // ST Async HTTP has a bug that it can't follow redirects, so check if that's the error and then try a sync httpGet
         if (!ret.status) { // When it's a redirect error bug, status is null
-            msg = "VRBO response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an error: ${ret.getErrorMessage()}. Retrying using proxy synchronous request"
-            log.warn (msg + "\nRedirect Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
-            getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "VRBO", asName: "Vrbo", siteName: "VRBO", processResponse: "processVRBOResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
-            return // We're done here
+            if (ret.getErrorMessage()?.contains("handshake_failure")) {
+                if (!data.proxy) {
+                    msg = "VRBO response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy request"
+                    log.warn (msg + "\nSSL Handshake Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    if (!downloadiCalendar(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], processVRBOResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                        msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} VRBO calendar proxy. Retrying in about ${rentalUpdateFrequency} minutes"
+                        log.error msg
+                    } else {
+                        return // We're done here
+                    }
+                } else {
+                    msg = "VRBO response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an proxy SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy synchronous request"
+                    log.warn (msg + "\nSSL Handshake proxy Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "VRBO", asName: "Vrbo", siteName: "VRBO", processResponse: "processVRBOResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                    return // We're done here
+                }
+            } else {            
+                msg = "VRBO response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an error: ${ret.getErrorMessage()}. Retrying using synchronous request"
+                log.warn (msg + "\nRedirect Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                if (getScheduleSync(cleanSecureUrl(iCalUrl), data, [ iCalName: "VRBO", asName: "Vrbo", siteName: "VRBO", processResponse: "processVRBOResponse" ])?.contains("handshake_failure")) { // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now
+                    msg = "VRBO response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an proxy SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy synchronous request"
+                    log.warn (msg + "\nSSL Handshake proxy Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "VRBO", asName: "Vrbo", siteName: "VRBO", processResponse: "processVRBOResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                    return // We're done here
+                }
+            }
         } else if ([ 301, 302, 303, 304, 305, 306, 307, 308 ].any { status -> status == ret.status } && rLocation) { // Sometimes ST doesn't handle redirect propertly, so let us handle it
             msg = "VRBO response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} redirected, retrying redirect:\n${rLocation}"
             log.warn msg
             if (iCalUrl == rLocation?.trim()) { // We shouldn't be stuck in a loop
                 msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} VRBO calendar, redirect loop. Retrying in about ${rentalUpdateFrequency} minutes"
                 log.error msg
-            } else if (!downloadiCalendar(proxyURL + cleanSecureUrl(rLocation), data + [proxy: true], processVRBOResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+            } else if (!downloadiCalendar(cleanSecureUrl(rLocation), data + [proxy: false], processVRBOResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
                 msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} VRBO calendar redirect. Retrying in about ${rentalUpdateFrequency} minutes"
                 log.error msg
             } else {
@@ -3163,7 +3310,7 @@ private getScheduleHomeAway(pinLen) {
             return // Move on
         }
 
-        if (!downloadiCalendar(proxyURL + cleanSecureUrl(iCalUrl), [pinLen: pinLen, no: no, suffix: suffix, proxy: true], processHomeAwayResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+        if (!downloadiCalendar(cleanSecureUrl(iCalUrl), [pinLen: pinLen, no: no, suffix: suffix, proxy: false], processHomeAwayResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
             def msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} HomeAway calendar. Retrying in about ${rentalUpdateFrequency} minutes"
             log.error msg
             msgs << msg
@@ -3197,13 +3344,39 @@ def processHomeAwayResponseAsync(ret, data) {
             log.warn (msg + "\nRedirect Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
             getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "HomeAway", asName: "HomeAway", siteName: "HomeAway", processResponse: "processHomeAwayResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy - TODO: httpGet fails with HomeAway server with handshake_failure error, FIX is to replace homeaway with vrbo in iCal URL
             return // We're done here
+            if (ret.getErrorMessage()?.contains("handshake_failure")) {
+                if (!data.proxy) {
+                    msg = "HomeAway response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy request"
+                    log.warn (msg + "\nSSL Handshake Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    if (!downloadiCalendar(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], processHomeAwayResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                        msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} HomeAway calendar proxy. Retrying in about ${rentalUpdateFrequency} minutes"
+                        log.error msg
+                    } else {
+                        return // We're done here
+                    }
+                } else {
+                    msg = "HomeAway response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an proxy SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy synchronous request"
+                    log.warn (msg + "\nSSL Handshake proxy Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "HomeAway", asName: "HomeAway", siteName: "HomeAway", processResponse: "processHomeAwayResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                    return // We're done here
+                }
+            } else {            
+                msg = "HomeAway response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an error: ${ret.getErrorMessage()}. Retrying using synchronous request"
+                log.warn (msg + "\nRedirect Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                if (getScheduleSync(cleanSecureUrl(iCalUrl), data, [ iCalName: "HomeAway", asName: "HomeAway", siteName: "HomeAway", processResponse: "processHomeAwayResponse" ])?.contains("handshake_failure")) { // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now
+                    msg = "HomeAway response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} returned an proxy SSL handshake error: ${ret.getErrorMessage()}. Retrying using proxy synchronous request"
+                    log.warn (msg + "\nSSL Handshake proxy Exception while querying: status ${ret.status}, warning ${ret.warningMessages}, error ${ret.errorData}\n${iCalUrl}")
+                    getScheduleSync(proxyURL + cleanSecureUrl(iCalUrl), data + [proxy: true], [ iCalName: "HomeAway", asName: "HomeAway", siteName: "HomeAway", processResponse: "processHomeAwayResponse" ]) // TODO: Run synch httpGet until ST fixes http async, add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+                    return // We're done here
+                }
+            }
         } else if ([ 301, 302, 303, 304, 305, 306, 307, 308 ].any { status -> status == ret.status } && rLocation) { // Sometimes ST doesn't handle redirect propertly, so let us handle it
             msg = "HomeAway response from ${propertyName ? "property ${propertyName}" : "unit ${no}"} redirected, retrying redirect:\n${rLocation}"
             log.warn msg
             if (iCalUrl == rLocation?.trim()) { // We shouldn't be stuck in a loop
                 msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} HomeAway calendar, redirect loop. Retrying in about ${rentalUpdateFrequency} minutes"
                 log.error msg
-            } else if (!downloadiCalendar(proxyURL + cleanSecureUrl(rLocation), data + [proxy: true], processHomeAwayResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
+            } else if (!downloadiCalendar(cleanSecureUrl(rLocation), data + [proxy: false], processHomeAwayResponseAsync)) { // Add the leading https if required and only use https as AirBnB/VRBO/HomeAway etc only use https now, fix GCM cipher negotiations through proxy
                 msg = "Error downloading ${propertyName ? "property ${propertyName}" : "unit ${no}"} HomeAway calendar redirect. Retrying in about ${rentalUpdateFrequency} minutes"
                 log.error msg
             } else {
@@ -4480,7 +4653,7 @@ def processGenericResponse(ret, data) {
             if (settings."iCalGeneric${suffix}UseTime") {
                 try {
                     def dtStart = entry['DTSTART']?.trim()
-                    if (dtStart.size() >=15) { // If this is yyyyMMddTHHmmssZ e.g. 20201018T142016Z (ISO 8601 UTC time) or yyyyMMddTHHmmss e.g. 20201018T142016 (ISO 8601 local time)
+                    if (dtStart.size() >= 15) { // If this is yyyyMMddTHHmmssZ e.g. 20201018T142016Z (ISO 8601 UTC time) or yyyyMMddTHHmmss e.g. 20201018T142016 (ISO 8601 local time)
                         use (groovy.time.TimeCategory) {
                             def dts = Date.parse("yyyyMMdd'T'HHmmss" + (dtStart.endsWith("Z") ? "X" : ""), dtStart) // Ajust for GMT (Z) if required, for local time (no Z) we need to adjust for the timeZone offset to counter the format(timeZone)
                             dts -= ((settings."iCalGeneric${suffix}StartOffset" ?: 0) as Integer).minutes // If we have a start time offset
@@ -4495,7 +4668,7 @@ def processGenericResponse(ret, data) {
                     }
 
                     def dtEnd = entry['DTEND']?.trim()
-                    if (dtEnd.size() >=15) { // If this is yyyyMMddTHHmmssZ e.g. 20201018T142016Z (ISO 8601 UTC time) or yyyyMMddTHHmmss e.g. 20201018T142016 (ISO 8601 local time)
+                    if (dtEnd.size() >= 15) { // If this is yyyyMMddTHHmmssZ e.g. 20201018T142016Z (ISO 8601 UTC time) or yyyyMMddTHHmmss e.g. 20201018T142016 (ISO 8601 local time)
                         use (groovy.time.TimeCategory) {
                             def dte = Date.parse("yyyyMMdd'T'HHmmss" + (dtEnd.endsWith("Z") ? "X" : ""), dtEnd) // Ajust for GMT (Z) if required, for local time (no Z) we need to adjust for the timeZone offset to counter the format(timeZone)
                             dte += ((settings."iCalGeneric${suffix}EndOffset" ?: 0) as Integer).minutes // If we have a end time offset
@@ -4886,7 +5059,7 @@ private generateAutomaticCode(autoCodePattern, pinLen, phone, startDate, expDate
     def code = null
     switch (autoCodePattern) {
         case "phone":
-            code = (phone?.trim()?.size() >= pinLen) ? (phone?.trim()?.replaceAll(/[^0-9]/, "")?.reverse()?.take(pinLen as Integer)?.reverse() as String) : ""// Last 'pinLen' digits of phone number is the code, remove all non numbers from the phone
+            code = (phone?.trim()?.size() >= pinLen) ? (phone?.trim()?.replaceAll(/[^0-9]/, "")?.reverse()?.take(pinLen as Integer)?.reverse() as String) : "" // Last 'pinLen' digits of phone number is the code, remove all non numbers from the phone
             break
 
         case "ddDDMMYY":
@@ -6782,6 +6955,13 @@ def codeCheck(userUpdate = false) {
         }
     }
 
+    // Check if we need to download rental calendar data - do this after processing users so that users are processed at the next turn around to avoid timing out
+    if (!state.nextRentalUpdateCheck || (now() >= state.nextRentalUpdateCheck)) { // If we've never run this before then run it now
+        startTimer(1, downloadRentalData) // Lets get and setup the rental user information, schedule it so we only have one pending execution at a time and this is a heavy call
+    } else {
+        log.trace "Checking for next automatic calendar update after ${(new Date(state.nextRentalUpdateCheck)).format("EEE MMM dd yyyy HH:mm z", timeZone)}"
+    }
+
     // Update the last time we can code check
     state.lastCheck = now()
 
@@ -7536,12 +7716,6 @@ def heartBeatMonitor() {
         sendPush msg
     }
     
-    if (!state.nextRentalUpdateCheck || (now() >= state.nextRentalUpdateCheck)) { // If we've never run this before then run it now
-        downloadRentalData() // Lets get and setup the rental user information
-    } else {
-        log.trace "Checking for next automatic calendar update after ${(new Date(state.nextRentalUpdateCheck)).format("EEE MMM dd yyyy HH:mm z", timeZone)}"
-    }
-
     // We check for a code update once a day
     if (now() >= state.nextCodeUpdateCheck) {
         // Before checking for code update, calculate the next time we want to check
@@ -7911,16 +8085,20 @@ def checkForCodeUpdate(evt = null) {
                 
                 // Check for app version updates
                 def appVersion = ret.data?."$appName"?.version
-                def appMsg = ret.data?."$appName"?.message
-                def criticalMsg = ret.data?."$appName"?.criticalMessage
+                def appMsg = ret.data?."$appName"?.message // Regular version update message
+                def versionForcedMsg = ret.data?."$appName"?.versionForcedMessage // Forcde message about version update
+                def criticalMsg = ret.data?."$appName"?.criticalMessage // Critial message for all versions
                 if (criticalMsg) { // If we have a critical message display it to the user
-                    log.info "CRITICAL MESSAGE: $criticalMsg"
+                    def msg = "${app.label}: $criticalMsg"
+                    log.info msg
                     sendPush(criticalMsg)
                 }
                 if (appVersion > clientVersion()) {
-                    def msg = (appMsg ? appMsg + "\n" : "") + "Update ${app.label} to version $appVersion (current ${clientVersion()}).\nDownload the latest version from www.rboyapps.com."
+                    def msg = "${app.label}: " + (versionForcedMsg ?: appMsg ?: "Update ${app.label} to version $appVersion (current ${clientVersion()}).\nDownload the latest version from www.rboyapps.com")
                     log.info msg
-                    if (updateNotifications != false) { // The default true may not be registered
+                    if (versionForcedMsg) {
+                        sendPush(msg)
+                    } else if (updateNotifications != false) { // The default true may not be registered
                         sendPush(msg)
                     }
                 } else {
